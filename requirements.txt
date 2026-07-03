@@ -1,0 +1,2 @@
+pipecat-ai[anthropic,deepgram,elevenlabs,silero,webrtc,runner]==0.0.108
+python-dotenv
