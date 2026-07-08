@@ -1,2 +1,10 @@
-pipecat-ai[anthropic,deepgram,elevenlabs,silero,webrtc,runner]==0.0.108
+pipecat-ai[anthropic,deepgram,elevenlabs,silero,webrtc,runner,openai]==0.0.108
 python-dotenv
+nats-py
+ray
+sherpa-onnx
+
+# eval harness (Track A)
+jiwer
+gTTS
+soundfile

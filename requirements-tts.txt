@@ -1,0 +1,11 @@
+# Cài vào venv RIÊNG (.venv-tts), không phải .venv chính — xem selfhost/tts_server.py
+# để biết lý do (dependency f5-tts rất nặng, nguy cơ xung đột fastapi/starlette với
+# Pipecat Gateway nếu cài chung venv).
+#
+#   python -m venv .venv-tts
+#   .venv-tts\Scripts\pip install -r requirements-tts.txt
+
+f5-tts
+fastapi
+uvicorn
+python-multipart
