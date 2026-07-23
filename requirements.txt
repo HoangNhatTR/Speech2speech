@@ -8,3 +8,10 @@ sherpa-onnx
 jiwer
 gTTS
 soundfile
+soxr
+# Official Kyutai Moshi websocket protocol uses Opus via sphn. This is lightweight;
+# torch/model weights remain isolated in .venv-s2s.
+sphn==0.2.1
+
+# datagen (Giai đoạn 3 — chuẩn bị dữ liệu, xem datagen/synthetic_dialogue.py)
+numpy

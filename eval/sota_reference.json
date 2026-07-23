@@ -1,0 +1,71 @@
+{
+  "_readme": "So sánh 'benchmark liên tục với SOTA' theo quy ước dự án. QUAN TRỌNG: mọi giá trị ở đây phải có 'source' trỏ tới tài liệu/paper thật đã đọc — KHÔNG được điền số ước đoán. Trường 'status' = 'cited' nghĩa là số đã có nguồn (thường là docs/roadmap.md, chính nó cũng trích từ một tutorial/technical report cụ thể); 'missing_reference' nghĩa là biết cần so sánh với gì nhưng CHƯA tra được số chính xác — để value=null thay vì bịa, và eval/run_benchmarks.py sẽ báo 'no_reference' cho mục đó thay vì so sánh sai.",
+
+  "latency_ms": {
+    "cascaded_selfhost_ttfa_p50": {
+      "value": 755,
+      "unit": "ms",
+      "source": "docs/roadmap.md mục 1 (dòng 19-22): tutorial kỹ thuật tháng 3/2026 đo pipeline cascaded tự host đạt ~755ms time-to-first-audio.",
+      "status": "cited"
+    },
+    "qwen3_omni_thinker_audio_to_text_p50": {
+      "value": 516,
+      "unit": "ms",
+      "source": "docs/roadmap.md mục 1: Qwen3-Omni tự host, phần Thinker qua vLLM, audio-to-text.",
+      "status": "cited"
+    },
+    "qwen3_omni_talker_cloud_p50": {
+      "value": 702,
+      "unit": "ms",
+      "source": "docs/roadmap.md mục 1: Qwen3-Omni Talker tối ưu chỉ có trên cloud API.",
+      "status": "cited"
+    },
+    "target_cascaded_budget_p50_min": {
+      "value": 600,
+      "unit": "ms",
+      "source": "docs/roadmap.md mục 4 (dòng 99-103): ngân sách độ trễ mục tiêu cascaded P50 (AEC+VAD+ASR+endpointing+LLM+TTS+mạng).",
+      "status": "cited"
+    },
+    "target_cascaded_budget_p50_max": {
+      "value": 950,
+      "unit": "ms",
+      "source": "docs/roadmap.md mục 4, cùng chỗ trên.",
+      "status": "cited"
+    },
+    "target_barge_in_max": {
+      "value": 150,
+      "unit": "ms",
+      "source": "docs/roadmap.md mục 4: 'từ lúc phát hiện tiếng nói đến lúc loa im < 150ms, vì đường này không đi qua LLM'.",
+      "status": "cited"
+    }
+  },
+
+  "asr_wer_pct": {
+    "zipformer_30m_rnnt_vlsp2020": {
+      "value": null,
+      "unit": "%",
+      "source": "docs/roadmap.md mục 3 chỉ nói 'SOTA trên VLSP2020/2023', không kèm số cụ thể. Cần tra model card/paper Zipformer-30M-RNNT (hynt) hoặc leaderboard VLSP trước khi điền — CHƯA làm trong lần build này.",
+      "status": "missing_reference"
+    },
+    "phowhisper_vlsp2020": {
+      "value": null,
+      "unit": "%",
+      "source": "VinAI PhoWhisper — cần tra bảng WER trong paper/model card chính thức trước khi điền.",
+      "status": "missing_reference"
+    }
+  },
+
+  "tts_quality": {
+    "f5_tts_vietnamese_mos": {
+      "value": null,
+      "unit": "MOS (1-5)",
+      "source": "F5-TTS-Vietnamese-ViVoice — cần tra model card/paper cho điểm MOS/UTMOS trước khi điền.",
+      "status": "missing_reference"
+    }
+  },
+
+  "full_duplex_bench": {
+    "_note": "Chưa có công bố Full-Duplex-Bench cho tiếng Việt ở bất kỳ hệ thống nào khác (docs/roadmap.md mục 9, điểm 3: 'Benchmark full-duplex đầu tiên cho tiếng Việt') — nên KHÔNG có số SOTA bên ngoài để so sánh tại thời điểm này. eval/duplex_bench dùng để tự so sánh giữa các phiên bản của chính duplex/turn_strategies.py theo thời gian (hồi quy nội bộ), không phải so với hệ thống khác.",
+    "status": "no_external_baseline_exists"
+  }
+}

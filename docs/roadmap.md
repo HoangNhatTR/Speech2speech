@@ -3,6 +3,12 @@
 > Bản markdown dễ đọc/dễ grep của `speech2speech.pdf` (trích xuất bằng `pdftotext`,
 > dọn lại bảng biểu). Nếu có sai lệch, file PDF gốc là nguồn chính xác.
 
+> **Pivot kiến trúc (2026-07-17)**: Giai đoạn 2 (full duplex) và Giai đoạn 3 (speech
+> token/Talker fine-tune) ở mục 2 dưới đây đã được thay bằng kiến trúc **Dual-path
+> Anchored Speech-to-Speech** chi tiết hơn — xem [mục 11](#11-pivot-kiến-trúc-quyết-định-2026-07-17-dual-path-anchored-speech-to-speech).
+> Giai đoạn 0-1 (mục 2) vẫn giữ nguyên, đã verify chạy thật, và trở thành "Cascade
+> fallback" trong kiến trúc mới — không có gì bị bỏ.
+
 Ý tưởng cốt lõi của sơ đồ: mọi thứ đều streaming theo chunk, LLM anchor là nơi duy nhất
 "hiểu" — ASR/TTS chỉ là bộ chuyển đổi, kênh cảm xúc chạy song song để không mất
 paralinguistic khi audio bị nén thành text, và đường ngắt lời (barge-in) cắt thẳng TTS
@@ -41,6 +47,11 @@ bản 1 dựa trên VAD: người dùng nói ≥200–300ms trong lúc bot đang
 buffer, huỷ request TTS/LLM, ghi lại "assistant bị ngắt tại từ thứ N" vào context. Mục
 tiêu: TTFA < 1s, tool calling hoạt động.
 
+*Trạng thái triển khai 2026-07-20:* WebRTC/LLM/TTS đã streaming; VieNeu-TTS GPU đo p50
+first audio 207ms, RTF 0.57. Zipformer checkpoint đang dùng thực tế là offline decode
+theo lượt nói (dù decode nhanh ~65ms), nên đây là cascaded real-time chứ chưa phải mọi
+khối đều streaming frame-level.
+
 **Giai đoạn 2 — Full duplex "thật" + cảm xúc (4–6 tuần).** Nâng turn-taking từ VAD thuần
 lên semantic endpointing (model smart-turn của Pipecat hoặc turn detector của LiveKit, có
 thể fine-tune thêm tiếng Việt); phân biệt backchannel ("ừ", "vâng vâng") với ngắt lời
@@ -72,10 +83,10 @@ cloning từ 3–10 giây audio tham chiếu, kèm flow xin consent và audio wa
 
 | Khối | Cho tiếng Việt | Đa ngôn ngữ / thay thế |
 |---|---|---|
-| ASR streaming | Zipformer-30M-RNNT train trên ~6.000 giờ tiếng Việt, chạy qua sherpa-onnx, SOTA trên VLSP2020/2023 — streaming thật, độ trễ thấp; PhoWhisper (VinAI) cho offline/rescoring | faster-whisper (large-v3-turbo) chunked; Deepgram/Google STT làm fallback |
+| ASR streaming | Mục tiêu là Zipformer online; checkpoint Zipformer 70k giờ hiện tích hợp qua sherpa-onnx là **offline theo lượt** nhưng decode nhanh ~65ms; PhoWhisper cho rescoring | Deepgram Nova-3 là fallback streaming thật; Whisper large-v3-turbo local đã đo quá chậm (~2.5s/câu) |
 | VAD + turn | Silero VAD v5 hoặc TEN VAD; smart-turn v3 (Pipecat) / LiveKit turn detector, fine-tune thêm tiếng Việt | Semantic endpointing bằng LLM nhỏ (Qwen3-0.6B) đọc partial transcript |
 | LLM anchor | Qwen3 8B–32B (tiếng Việt mạnh, function calling tốt, vLLM streaming); thay thế: Llama 3.3, SeaLLM/Sailor cho Đông Nam Á | Claude/GPT qua API nếu ưu tiên chất lượng tool-use |
-| TTS streaming | F5-TTS-Vietnamese train trên viVoice (chất lượng cao, chunk theo câu); viXTTS — XTTS fine-tune trên viVoice, có voice cloning và đa ngôn ngữ (streaming <200ms); VietTTS của dangvansam — cloning qua audio prompt, API tương thích OpenAI; VieNeu-TTS v2 — cloning tức thì, chạy real-time trên CPU, hỗ trợ code-switching Việt–Anh | CosyVoice 2/3 (streaming 2 chiều, emotion instruct); thương mại: ElevenLabs hỗ trợ tiếng Việt kèm cloning (`eleven_flash_v2_5`), CosyVoice v3.5 trên DashScope có voice cloning tiếng Việt |
+| TTS streaming | VieNeu-TTS v3 Turbo hiện dùng `infer_stream()` thật (GPU p50 first audio 207ms, RTF 0.57); F5-TTS/viXTTS/VietTTS là lựa chọn cần benchmark thêm | CosyVoice 2/3 (streaming 2 chiều, emotion instruct); thương mại: ElevenLabs `eleven_flash_v2_5` |
 | Emotion-in (SER) | emotion2vec+ large đóng băng + classifier nhẹ — đúng công thức các đội VLSP 2025 dùng cho SER tiếng Việt; SenseVoice (ASR + emotion + audio event) | Qwen3-Omni-Captioner để mô tả paralinguistic chi tiết |
 | E2E speech LLM (GĐ3) | Qwen3-Omni-30B-A3B (input tiếng Việt ✓, output cần train) | Moshi, Freeze-Omni, GLM-4-Voice; PersonaPlex (NVIDIA, 2026) — full duplex có điều khiển giọng và vai |
 
@@ -187,3 +198,132 @@ trong vài tuần với LoRA trên phần Talker, hoặc thuê cloud theo đợt
 
 **Máy dev hiện tại (GPU 2GB VRAM) không đủ cho giai đoạn 1 trở đi** — mọi việc tự host
 model đều cần thuê GPU cloud theo đợt.
+
+## 11. Pivot kiến trúc (quyết định 2026-07-17): Dual-path Anchored Speech-to-Speech
+
+> **Nguồn**: nội dung mục này tổng hợp từ đề xuất kiến trúc do người dùng cung cấp trực
+> tiếp trong hội thoại, không phải do tự nghiên cứu/fetch mạng. Các claim về model cụ
+> thể (Moshi/Mimi, MoshiRAG, KAME, DuplexSLA, RelayS2S, Qwen3-ASR-0.6B/1.7B, MiniCPM-o
+> 4.5, GLM-4-Voice, Kani TTS Vie, Valtec TTS) nằm ngoài khả năng tự verify tại thời điểm
+> ghi (kiến thức tới 2026-01, không có bước fetch/tra cứu độc lập) — coi là **giả thuyết
+> cần tự kiểm chứng license/tồn tại thật/chất lượng** trước khi cam kết từng track, đúng
+> tinh thần "đọc source thật, không đoán" đã áp dụng xuyên suốt tài liệu này (xem cách
+> Whisper-turbo, F5-TTS, Zipformer-6k-giờ đã được tự đo lại thay vì tin số liệu công bố).
+
+### Vì sao pivot khỏi Giai đoạn 2-3 cũ ở mục 2
+
+Giai đoạn 3 cũ (hướng (a) đã chọn) đặt cược vào việc tự fine-tune Talker của Qwen3-Omni
+nói tiếng Việt trước khi có bất kỳ demo full pipeline nào chạy được — rủi ro cao, không
+có gate trung gian. Vấn đề gốc: **mọi model S2S native mã nguồn mở hiện tại (Moshi,
+Qwen3-Omni, MiniCPM-o, GLM-4-Voice) đều chưa có checkpoint chính thức sinh speech tiếng
+Việt production-ready** (Qwen3-Omni hiểu tiếng Việt ở input nhưng chỉ sinh speech ra 10
+ngôn ngữ, chưa gồm tiếng Việt — xem mục 2 hướng (a) đã ghi).
+
+Dual-path Anchored tách hai trách nhiệm thay vì gộp vào một model:
+
+- **Fast path** (S2S) — chỉ chịu trách nhiệm turn-taking/backchannel/ack/prosody, KHÔNG
+  chịu trách nhiệm nội dung factual.
+- **Anchor path** (ASR + text LLM) — chính là Giai đoạn 1 đã verify chạy thật
+  (Zipformer + Qwen3-8B-AWQ), chịu trách nhiệm toàn bộ nội dung chính xác.
+- **Verifier** — quyết định phần nào của fast path được phép phát ra loa (COMMIT/HOLD/
+  REWRITE/CANCEL/CASCADE_FALLBACK).
+- **Cascade fallback** — chính là pipeline cascaded hiện tại
+  (`bot.py::build_stt/build_llm/build_tts`), dùng khi rủi ro cao (thanh toán, y tế,
+  pháp lý...) hoặc khi fast path và anchor bất đồng.
+
+**Điểm quan trọng nhất: không có gì trong Giai đoạn 0-1 bị bỏ.** Cascaded pipeline đã
+verify trở thành Anchor path + Cascade fallback trong kiến trúc mới — nguyên xi code
+hiện tại, không viết lại. Lợi ích của pivot: không cần Vietnamese Talker sẵn sàng ngay
+để có một hệ thống chạy được — fast path S2S có thể chạy ở "shadow mode" (không phát
+audio thật) trong khi anchor path (100% code đã verify) vẫn chịu trách nhiệm toàn bộ
+nội dung, giống hệt cấu hình A đề xuất bên dưới.
+
+### Kiến trúc tóm tắt
+
+```
+Mic → AEC/NS → Shared audio bus (ring buffer, timestamp, turn_id)
+                    │                              │
+             FAST PATH (S2S)                 ANCHOR PATH
+        turn-taking/backchannel/         Streaming ASR → Anchor LLM
+        speculative low-risk prefix      (reasoning/RAG/tool/factual)
+                    │                              │
+                    └──────────► VERIFIER ◄─────────┘
+                    risk classify · entity/number check
+                    semantic entailment · tool-state gate
+                                │
+                ┌───────────────┼───────────────┐
+             COMMIT           HOLD          CASCADE_FALLBACK
+                │               │                  │
+        speculative audio  chờ anchor      ASR→LLM→TTS (= Giai đoạn 1)
+                └───────────────┴──────────────────┘
+                                │
+                    Output commit controller
+                (100-250ms buffer, clause-boundary handoff)
+                                │
+                             Speaker
+```
+
+### 3 chế độ vận hành theo rủi ro nội dung
+
+| Mode | Khi nào dùng | Fast path được phép nói gì |
+| --- | --- | --- |
+| A — S2S speculative | Small talk, brainstorm, nội dung ít rủi ro | Toàn bộ phản hồi, verifier kiểm tra nhẹ |
+| B — Anchored S2S | Phần lớn agent nghiệp vụ | Chỉ ack ("Để mình kiểm tra") — nội dung factual đợi anchor |
+| C — Cascade fallback | Thanh toán/y tế/pháp lý/xóa dữ liệu/model confidence thấp/anchor-fastpath bất đồng | Không nói gì — toàn bộ qua cascaded pipeline hiện tại |
+
+### Track A0-A6 (đổi số từ "Giai đoạn 0-6" trong đề xuất gốc để không trùng với Giai
+đoạn 0-3 đã dùng ở mục 2)
+
+| Track | Việc chính | Cần GPU? | Go/no-go | Trạng thái |
+| --- | --- | --- | --- | --- |
+| A0 | Bộ benchmark 300-500 câu tiếng Việt (3 miền, ngắt lời, số/ngày/tên, tình huống nhạy cảm) + đo latency/WER/interruption | Không | ASR stable-prefix đủ tốt, TTS đọc đúng số/ngày/tên, anchor TTFT kịp handoff | **Việc tiếp theo, chưa bắt đầu** |
+| A1 | Audio fan-out — chạy song song fast path + anchor path, CHƯA nối output, chỉ log | Có (fast path) | prefix_accept_rate đủ cao để hybrid có giá trị | Chưa bắt đầu |
+| A2 | Verifier (rule + entity + NLI) theo risk policy | Không (verifier nhẹ) | — | Chưa bắt đầu |
+| A3 | Relay handoff (committed prefix, clause-boundary, commit buffer, cancellation) | Có | Text handoff ổn định trước khi làm audio handoff | Chưa bắt đầu |
+| A4 | Tool/RAG qua action channel, phân loại read-only/reversible/irreversible/sensitive | Không thêm | — | Chưa bắt đầu, có thể tái dùng Event Bus/Tool Service hiện có |
+| A5 | Fine-tune fast path (Moshi) nói tiếng Việt — user/assistant/inner-monologue stream | Có, nhiều tuần | — | Chưa bắt đầu, rủi ro cao nhất, phụ thuộc thuê GPU cloud (giống Track D cũ) |
+| A6 | Production hardening (tracing, session recovery, circuit breaker sang cascade...) | — | — | Chưa bắt đầu |
+
+### Ràng buộc phần cứng đo thật tại thời điểm quyết định (2026-07-17)
+
+```
+GPU: NVIDIA GB10 — utilization 96% (tiến trình khác của user tts02, không liên quan)
+RAM: 9.4GB free / 121GB (46GB available tính cả cache)
+```
+
+Máy dùng chung, đúng rủi ro đã ghi ở mục "Rủi ro đã biết"
+(`docs/platform-architecture.md`) — hiện KHÔNG có chỗ chạy Moshi hay bất kỳ fast-path
+model GPU nào để bắt đầu prototyping. Đây là lý do Track A0 (thuần CPU, không đụng GPU)
+là điểm bắt đầu đúng bất kể GPU đang bận hay không — không phải vì né việc, mà vì A0
+không phụ thuộc tài nguyên đang thiếu.
+
+### Model ứng viên theo path (CHƯA VERIFY — cần tự kiểm chứng license/tồn tại/chất
+lượng thật trước khi chọn, xem lưu ý nguồn ở đầu mục)
+
+| Path | Ứng viên | Ghi chú cần tự kiểm chứng |
+| --- | --- | --- |
+| Fast path (S2S) | Moshi/Mimi | Claim ~160-200ms latency là số công bố của tác giả, chưa tự đo; license và checkpoint tiếng Việt chưa xác nhận |
+| Anchor ASR | Qwen3-ASR-0.6B/1.7B | Chưa xác nhận tồn tại/license — nếu không có, `selfhost/asr.py` (Zipformer, đã verify WER 2.7%) đã sẵn dùng được |
+| Anchor LLM | Qwen3-8B (đã dùng) / Qwen3-30B-A3B-Instruct-2507 | Qwen3-8B-AWQ đã verify chạy thật qua vLLM — 30B-A3B chưa thử, cần VRAM lớn hơn |
+| TTS renderer chung | VieNeu-TTS (đã verify) / Kani TTS Vie / Valtec TTS | Kani/Valtec chưa xác nhận license, độ ổn định, pronunciation — VieNeu-TTS là lựa chọn an toàn đã có |
+| Verifier | Rule + entity comparator + NLI tiếng Việt | Model NLI tiếng Việt chất lượng đủ dùng chưa xác nhận có sẵn — có thể cần tự train/chọn nhỏ |
+
+### KPI mục tiêu
+
+| Metric | MVP | Production |
+| --- | --- | --- |
+| First acknowledgement P50 | < 400ms | < 250ms |
+| First factual audio P50 | < 900ms | < 600ms |
+| Interruption stop P50 | < 300ms | < 200ms |
+| Prefix contradiction | < 5% | < 1% |
+| Sensitive factual error | 0 trong test gate | 0 |
+| Cascade fallback rate | < 50% | < 20-30% |
+
+Metric quan trọng nhất không phải first-audio latency đơn thuần mà là **first verified
+useful audio latency** — phát nhanh rồi phải sửa lại nội dung không tính là latency tốt.
+
+### Trạng thái
+
+Chỉ là quyết định kiến trúc, ghi lại ngày 2026-07-17 — **chưa có dòng code nào** cho các
+track A0-A6. Việc tiếp theo đã chọn cùng người dùng: Track A0 (bộ benchmark + harness),
+tái dùng `eval/testset.py`/`eval/asr_wer.py`/`eval/duplex_bench` đã có sẵn.

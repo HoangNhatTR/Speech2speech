@@ -7,8 +7,10 @@ SERVICES_LLM_BACKEND=cloud|local để test model nhỏ hơn tự host cho cả 
 Planning/...).
 
 cloud  -> Claude qua Anthropic API (mặc định, đã verify chạy tốt).
-local  -> bất kỳ endpoint tương thích OpenAI (vd vLLM serve) — CHƯA verify chạy (cùng
-          giới hạn với bot.py::build_llm: vLLM cần WSL2/Linux + GPU đủ VRAM).
+local  -> bất kỳ endpoint tương thích OpenAI (vd vLLM serve) — bot.py::build_llm đã
+          verify chạy thật với vLLM + Qwen3-8B-AWQ (xem docs/platform-architecture.md);
+          dùng chung endpoint đó cho service này nếu muốn (SERVICES_VLLM_BASE_URL),
+          nhưng CHƯA tự chạy thử riêng luồng service này qua local.
 """
 
 import os
@@ -44,7 +46,7 @@ def _get_openai_client() -> AsyncOpenAI:
 
 def default_model() -> str:
     if backend() == "local":
-        return os.getenv("SERVICES_VLLM_MODEL", "Qwen/Qwen3-8B-Instruct")
+        return os.getenv("SERVICES_VLLM_MODEL", "Qwen/Qwen3-8B-AWQ")
     return os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
 

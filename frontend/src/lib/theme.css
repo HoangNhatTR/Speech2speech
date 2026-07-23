@@ -1,0 +1,89 @@
+/* Design tokens dùng chung cho Dashboard/Settings — bảng màu theo dataviz skill
+   (references/palette.md): sequential=blue (magnitude theo thời gian), status màu cố
+   định (good/warning/critical), không dùng màu categorical rainbow vì phần lớn chart ở
+   đây là 1 chuỗi số theo thời gian, không cần phân biệt nhiều nhóm. */
+:root {
+	--surface-1: #fcfcfb;
+	--page-plane: #f9f9f7;
+	--text-primary: #0b0b0b;
+	--text-secondary: #52514e;
+	--text-muted: #898781;
+	--gridline: #e1e0d9;
+	--baseline: #c3c2b7;
+	--border: rgba(11, 11, 11, 0.1);
+
+	--series-1: #2a78d6; /* sequential blue */
+	--series-1-soft: #cde2fb;
+
+	--status-good: #0ca30c;
+	--status-warning: #fab219;
+	--status-serious: #ec835a;
+	--status-critical: #d03b3b;
+
+	--font-sans:
+		system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--surface-1: #1a1a19;
+		--page-plane: #0d0d0d;
+		--text-primary: #ffffff;
+		--text-secondary: #c3c2b7;
+		--text-muted: #898781;
+		--gridline: #2c2c2a;
+		--baseline: #383835;
+		--border: rgba(255, 255, 255, 0.1);
+
+		--series-1: #3987e5;
+		--series-1-soft: #184f95;
+
+		--status-good: #0ca30c;
+		--status-warning: #fab219;
+		--status-serious: #ec835a;
+		--status-critical: #d03b3b;
+	}
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+	background: var(--page-plane);
+	color: var(--text-primary);
+	font-family: var(--font-sans);
+}
+
+a {
+	color: var(--series-1);
+}
+
+.card {
+	background: var(--surface-1);
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	padding: 1.25rem;
+}
+
+table {
+	border-collapse: collapse;
+	width: 100%;
+	font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+	text-align: left;
+	padding: 0.4rem 0.6rem;
+	border-bottom: 1px solid var(--gridline);
+	font-size: 0.875rem;
+}
+
+th {
+	color: var(--text-muted);
+	font-weight: 500;
+}

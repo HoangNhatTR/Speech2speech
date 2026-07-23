@@ -20,11 +20,12 @@ def percentile(values: list, p: float) -> float:
     return values[idx]
 
 
-def main() -> None:
+def summarize() -> list[dict]:
+    """Đọc eval/results/latency_log.jsonl và trả về danh sách nhóm (metric, backend
+    config) kèm p50/p95/mean/n — dùng lại được từ eval/run_benchmarks.py và
+    gateway/dashboard_api.py mà không phải parse JSONL hai lần."""
     if not LOG_PATH.exists():
-        print(f"Chưa có log: {LOG_PATH}")
-        print("Log được ghi khi chạy hội thoại voice thật qua gateway/main.py (bot.py).")
-        return
+        return []
 
     groups = defaultdict(list)
     with open(LOG_PATH, encoding="utf-8") as f:
@@ -41,14 +42,35 @@ def main() -> None:
             )
             groups[key].append(record["value_ms"])
 
-    print(f"{'metric':<18} {'stt':<8} {'llm':<8} {'tts':<8} {'n':>4} {'p50':>8} {'p95':>8} {'mean':>8}")
+    rows = []
     for (metric, stt, llm, tts), values in sorted(groups.items()):
-        p50 = percentile(values, 0.5)
-        p95 = percentile(values, 0.95)
-        mean = sum(values) / len(values)
+        rows.append(
+            {
+                "metric": metric,
+                "stt_backend": stt,
+                "llm_backend": llm,
+                "tts_backend": tts,
+                "n": len(values),
+                "p50_ms": percentile(values, 0.5),
+                "p95_ms": percentile(values, 0.95),
+                "mean_ms": sum(values) / len(values),
+            }
+        )
+    return rows
+
+
+def main() -> None:
+    rows = summarize()
+    if not rows:
+        print(f"Chưa có log: {LOG_PATH}")
+        print("Log được ghi khi chạy hội thoại voice thật qua gateway/main.py (bot.py).")
+        return
+
+    print(f"{'metric':<18} {'stt':<8} {'llm':<8} {'tts':<8} {'n':>4} {'p50':>8} {'p95':>8} {'mean':>8}")
+    for row in rows:
         print(
-            f"{metric:<18} {stt:<8} {llm:<8} {tts:<8} {len(values):>4} "
-            f"{p50:>7.0f}ms {p95:>7.0f}ms {mean:>7.0f}ms"
+            f"{row['metric']:<18} {row['stt_backend']:<8} {row['llm_backend']:<8} {row['tts_backend']:<8} "
+            f"{row['n']:>4} {row['p50_ms']:>7.0f}ms {row['p95_ms']:>7.0f}ms {row['mean_ms']:>7.0f}ms"
         )
 
 

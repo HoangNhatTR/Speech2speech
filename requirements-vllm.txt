@@ -1,0 +1,13 @@
+# Cài vào venv RIÊNG (.venv-vllm), không phải .venv chính — xem docs/platform-
+# architecture.md mục "Giai đoạn 1" để biết lý do (dependency vllm rất nặng: torch,
+# ray, xgrammar, flashinfer... — cô lập khỏi Pipecat Gateway).
+#
+#   python -m venv .venv-vllm
+#   .venv-vllm/bin/pip install -r requirements-vllm.txt
+#
+# ĐÃ verify chạy thật trên GPU aarch64 (NVIDIA GB10, sm_121) — khởi động lần đầu mất
+# ~15 phút vì vLLM phải tự biên dịch kernel CUDA (chưa có bản dựng sẵn cho kiến trúc
+# GPU quá mới), các lần chạy sau vẫn phải biên dịch lại (autotune cache không tự dùng
+# lại được giữa các lần chạy trên máy này, xem docs/platform-architecture.md).
+
+vllm==0.25.1

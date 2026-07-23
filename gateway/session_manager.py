@@ -33,5 +33,10 @@ class SessionManager:
     def count(self) -> int:
         return len(self._sessions)
 
+    def list_sessions(self) -> list[Session]:
+        """Snapshot các phiên đang mở — dùng cho GET /api/status (Dashboard). Chỉ chứa
+        session_id/kind/created_at, không có nội dung hội thoại/audio nào."""
+        return list(self._sessions.values())
+
 
 session_manager = SessionManager()

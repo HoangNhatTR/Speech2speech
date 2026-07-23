@@ -1,8 +1,15 @@
 .venv/
 .venv-tts/
+.venv-s2s/
+.venv-vllm/
 __pycache__/
 *.pyc
 .env
 *.log
 models/
 eval/results/
+bin/
+data/
+logs/
+.runtime/
+.cache/

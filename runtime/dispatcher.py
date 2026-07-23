@@ -38,9 +38,16 @@ SERVICES = {
 # Ray worker (mỗi actor chạy trong 1 process riêng) không tự kế thừa os.environ đã
 # được load_dotenv() nạp ở process driver — phải truyền tường minh qua runtime_env,
 # nếu không các service gọi Claude sẽ báo thiếu ANTHROPIC_API_KEY dù .env đã có key.
+# Cũng phải gồm biến của Track B (services/llm_client.py) — thiếu SERVICES_LLM_BACKEND
+# thì actor luôn rơi về "cloud" bất kể .env đặt gì, vì os.getenv trong actor không thấy
+# biến đó.
 ACTOR_ENV_VARS = {
     "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
     "ANTHROPIC_MODEL": os.getenv("ANTHROPIC_MODEL", ""),
+    "SERVICES_LLM_BACKEND": os.getenv("SERVICES_LLM_BACKEND", "cloud"),
+    "SERVICES_VLLM_BASE_URL": os.getenv("SERVICES_VLLM_BASE_URL", "http://localhost:8000/v1"),
+    "SERVICES_VLLM_API_KEY": os.getenv("SERVICES_VLLM_API_KEY", "not-needed"),
+    "SERVICES_VLLM_MODEL": os.getenv("SERVICES_VLLM_MODEL", "Qwen/Qwen3-8B-Instruct"),
 }
 
 

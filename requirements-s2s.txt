@@ -1,0 +1,12 @@
+# Optional, isolated environment for Mimi/Moshi research. Do NOT install this into the
+# Gateway .venv: PyTorch/Moshi can conflict with Pipecat/ONNX/vLLM dependencies and a
+# full Moshi checkpoint needs significant GPU memory.
+#
+# Cách tái lập trên máy GB10/CUDA 13 hiện tại:
+#   ./scripts/setup_s2s_env.sh
+# Hoặc tự cài Torch + Torchaudio khớp CUDA trước rồi mới cài file này.
+
+# Version verified as latest on PyPI on 2026-07-20; official Kyutai package.
+moshi==0.2.13
+soundfile
+numpy

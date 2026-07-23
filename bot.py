@@ -6,7 +6,7 @@ harness, Event Bus) không đổi khi swap backend.
 
   cloud (Giai đoạn 0): WebRTC mic -> Deepgram STT -> Claude -> ElevenLabs TTS -> loa.
   local (Giai đoạn 1): WebRTC mic -> Zipformer STT (sherpa-onnx, tự host) -> Qwen3 qua
-                        vLLM (tự host) -> F5-TTS-Vietnamese (tự host) -> loa.
+                        vLLM (tự host) -> VieNeu-TTS (tự host) -> loa.
 
 Chạy: python -m gateway.main, rồi mở http://localhost:7860/client trong trình duyệt
 (cần cấp quyền mic). Xem docstring trong gateway/main.py để biết vì sao không dùng
@@ -18,14 +18,26 @@ khác: khi người dùng hỏi giờ, LLM gọi tool "get_current_time" và pip
 request lên subject "svc.tool" cho Runtime Scheduler xử lý, giống hệt cách Gateway gọi
 các service khác qua /v1/ws.
 
-Backend "local" CHƯA chạy thử được đầy đủ trên máy dev (GPU 2GB, không đủ cho LLM/TTS
-tự host) — xem docs/platform-architecture.md mục "Giai đoạn 1" để biết phần nào đã
-verify (ASR) và phần nào mới chỉ viết code chờ máy có GPU đủ mạnh (LLM qua vLLM, TTS
-F5-TTS-Vietnamese).
+Backend "local": ASR (Zipformer), LLM (Qwen3-8B-AWQ qua vLLM) và TTS (VieNeu-TTS) ĐÃ
+verify chạy thật — xem selfhost/asr.py, docs/platform-architecture.md, selfhost/
+tts_server.py. vLLM cần venv riêng (.venv-vllm) và mất ~15 phút khởi động lần đầu (biên
+dịch kernel CUDA cho GPU mới) — xem docs/platform-architecture.md mục "Giai đoạn 1" để
+biết lệnh `vllm serve` đầy đủ và cách chạy.
 
 Yêu cầu (.env, xem .env.example): với backend cloud cần ANTHROPIC_API_KEY,
 DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID. Cần NATS + runtime.dispatcher
 đang chạy để tool calling hoạt động (xem README.md).
+
+Giai đoạn 2 (docs/roadmap.md mục 2, "Full duplex thật + cảm xúc") — CHƯA verify bằng hội
+thoại thật, xem docstring từng file trong duplex/:
+  DUPLEX_BACKCHANNEL_FILTER=true (mặc định) dùng duplex/turn_strategies.py để không cắt
+  lời bot khi người dùng chỉ nói "dạ/vâng/ừm" (backchannel) trong lúc bot đang nói; đặt
+  false để quay lại hành vi VAD thuần (ngắt ngay khi có bất kỳ tiếng nói nào).
+  EMOTION_BACKEND=none (mặc định) | heuristic bật thử đường dây chèn tag cảm xúc vào
+  context (duplex/emotion.py) — heuristic dựa trên từ khoá trong transcript, KHÔNG phải
+  SER thật trên audio.
+  duplex/interruption_recovery.py luôn bật: ghi lại vào context phần bot đã nói khi bị
+  ngắt lời giữa chừng.
 """
 
 import os
@@ -58,12 +70,29 @@ from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import TransportParams
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
+from duplex.emotion import EmotionTaggingProcessor
+from duplex.interruption_recovery import InterruptionRecoveryProcessor
+from duplex.turn_strategies import VietnameseBackchannelTurnStartStrategy
 from eval import latency_log
 from eventbus.client import request as bus_request
+from gateway import runtime_config
 from gateway.session_manager import session_manager
-from selfhost.asr import ZipformerVietnameseSTTService
-from selfhost.f5_tts_client import F5TTSVietnameseService
+from selfhost.asr import WhisperTurboVietnameseSTTService, ZipformerVietnameseSTTService
+from selfhost.vieneu_tts_client import VieNeuTTSService
+from s2s.audio_hub import AudioHub
+from s2s.backend import build_s2s_backend
+from s2s.events import S2SMode
+from s2s.orchestrator import orchestrator_registry
+from s2s.policy import SegmentPolicy
+from s2s.processors import (
+    AnchorObservationProcessor,
+    AudioHubProcessor,
+    PlaybackStateProcessor,
+    RealtimeControlProcessor,
+)
+from s2s.shadow import ShadowS2SRunner
 
 load_dotenv(override=True)
 
@@ -75,7 +104,11 @@ SYSTEM_PROMPT = """Bạn là một trợ lý giọng nói tiếng Việt, nói c
 - Nếu bị người dùng ngắt lời, hãy dừng ngay và lắng nghe.
 - Khi cuộc trò chuyện vừa bắt đầu (chưa có câu nói nào của người dùng), hãy chủ động
   chào một câu ngắn gọn trước.
-- Nếu người dùng hỏi giờ hiện tại, hãy gọi tool get_current_time thay vì tự đoán."""
+- Nếu người dùng hỏi giờ hiện tại, hãy gọi tool get_current_time thay vì tự đoán.
+- Thỉnh thoảng bạn sẽ thấy các ghi chú dạng "[Hệ thống: ...]" hoặc "[user_emotion: ...]"
+  xen trong hội thoại — đó là ghi chú nội bộ, KHÔNG phải lời người dùng nói. Dùng nó để
+  điều chỉnh phản hồi (vd nói lại phần bị ngắt, hoặc dịu giọng nếu người dùng đang khó
+  chịu), tuyệt đối không đọc nguyên văn ghi chú đó ra cho người dùng nghe."""
 
 GET_CURRENT_TIME_TOOL = FunctionSchema(
     name="get_current_time",
@@ -100,10 +133,19 @@ def webrtc_params() -> TransportParams:
 
 
 def build_stt():
-    backend = os.getenv("STT_BACKEND", "cloud")
+    backend = runtime_config.get("STT_BACKEND", "cloud")
     if backend == "local":
-        # Zipformer-30M-RNNT qua sherpa-onnx — đã verify chạy tốt trên CPU (xem
-        # selfhost/asr.py). Tải model trước: python scripts/download_asr_model.py
+        # Hai engine local, chọn qua ASR_LOCAL_ENGINE (mặc định zipformer) — xem
+        # selfhost/asr.py cho chi tiết đánh đổi giữa hai lựa chọn.
+        engine = os.getenv("ASR_LOCAL_ENGINE", "zipformer")
+        if engine == "whisper":
+            # Whisper large-v3-turbo qua sherpa-onnx — ĐÃ ĐO, KHÔNG khuyến nghị: WER 12.5%
+            # (thua Zipformer), latency ~2474ms/câu — xem selfhost/asr.py để biết chi tiết.
+            return WhisperTurboVietnameseSTTService(
+                model_dir=os.environ["WHISPER_ASR_MODEL_DIR"],
+            )
+        # Zipformer train ~70k giờ qua sherpa-onnx — đã verify chạy tốt trên CPU, WER 2.7%
+        # (xem selfhost/asr.py). Tải model trước: python scripts/download_asr_model.py
         return ZipformerVietnameseSTTService(
             model_dir=os.environ["ASR_MODEL_DIR"],
         )
@@ -111,7 +153,7 @@ def build_stt():
         api_key=os.getenv("DEEPGRAM_API_KEY"),
         settings=DeepgramSTTService.Settings(
             model="nova-3",
-            language=os.getenv("DEEPGRAM_LANGUAGE", "vi"),
+            language=runtime_config.get("DEEPGRAM_LANGUAGE", "vi"),
             smart_format=True,
             interim_results=True,
             punctuate=True,
@@ -120,17 +162,21 @@ def build_stt():
 
 
 def build_llm():
-    backend = os.getenv("LLM_BACKEND", "cloud")
+    backend = runtime_config.get("LLM_BACKEND", "cloud")
     if backend == "local":
-        # Qwen3 qua vLLM (API tương thích OpenAI) — CHƯA chạy thử được: vLLM không có
-        # wheel Windows (chỉ manylinux), cần chạy trong WSL2 hoặc GPU cloud Linux, và
-        # máy dev (GPU 2GB) không đủ VRAM cho model 8B dù đã lượng tử hoá. Xem
-        # docs/platform-architecture.md để biết lệnh `vllm serve` khi có máy phù hợp.
+        # Qwen3-8B-AWQ qua vLLM (API tương thích OpenAI) — ĐÃ verify chạy thật trên GPU
+        # (venv riêng .venv-vllm, xem docs/platform-architecture.md). Dùng bản lượng tử
+        # hoá AWQ (~6.1GB, không phải bf16 gốc ~16GB) vì máy chạy chung với người khác,
+        # RAM/VRAM hạn chế theo thời điểm — đổi VLLM_MODEL nếu máy bạn dư tài nguyên hơn.
+        # Cờ --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3
+        # BẮT BUỘC khi chạy `vllm serve` (xem lệnh đầy đủ trong platform-architecture.md)
+        # — thiếu reasoning-parser thì nội dung suy luận `<think>...</think>` sẽ lẫn vào
+        # content thật, TTS sẽ đọc to cả phần suy luận đó lên loa.
         llm = OpenAILLMService(
             base_url=os.environ["VLLM_BASE_URL"],
             api_key=os.getenv("VLLM_API_KEY", "not-needed"),
             settings=OpenAILLMService.Settings(
-                model=os.getenv("VLLM_MODEL", "Qwen/Qwen3-8B-Instruct"),
+                model=runtime_config.get("VLLM_MODEL", "Qwen/Qwen3-8B-AWQ"),
                 system_instruction=SYSTEM_PROMPT,
             ),
         )
@@ -138,7 +184,7 @@ def build_llm():
         llm = AnthropicLLMService(
             api_key=os.getenv("ANTHROPIC_API_KEY"),
             settings=AnthropicLLMService.Settings(
-                model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+                model=runtime_config.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
                 system_instruction=SYSTEM_PROMPT,
             ),
         )
@@ -147,16 +193,17 @@ def build_llm():
 
 
 def build_tts(aiohttp_session: aiohttp.ClientSession):
-    backend = os.getenv("TTS_BACKEND", "cloud")
+    backend = runtime_config.get("TTS_BACKEND", "cloud")
     if backend == "local":
-        # F5-TTS-Vietnamese-ViVoice qua selfhost/tts_server.py (venv riêng .venv-tts).
-        # CHƯA chạy thử được: checkpoint ~5GB, máy dev chỉ có CPU/GPU 2GB — suy luận
-        # flow-matching trên CPU sẽ rất chậm. Code đã viết đúng theo API thật của
-        # f5_tts.api.F5TTS (xem selfhost/tts_server.py), cần máy có GPU đủ VRAM để dùng
-        # thực tế. Chạy server trước: .venv-tts\\Scripts\\python selfhost/tts_server.py
-        return F5TTSVietnameseService(
-            base_url=os.getenv("F5_TTS_SERVER_URL", "http://localhost:8100"),
+        # VieNeu-TTS qua selfhost/tts_server.py (venv riêng .venv-tts). ĐÃ verify chạy
+        # thật, cả CPU (RTF ~1.1-1.3) lẫn GPU (RTF ~1.0) — xem selfhost/tts_server.py.
+        # Chạy server trước: .venv-tts\\Scripts\\python selfhost/tts_server.py (Windows)
+        # hoặc .venv-tts/bin/python selfhost/tts_server.py (Linux/macOS)
+        return VieNeuTTSService(
+            base_url=os.getenv("VIENEU_SERVER_URL", "http://localhost:8100"),
             aiohttp_session=aiohttp_session,
+            streaming=runtime_config.get("VIENEU_STREAMING", "true").strip().lower()
+            == "true",
         )
     return ElevenLabsTTSService(
         api_key=os.getenv("ELEVENLABS_API_KEY"),
@@ -164,7 +211,7 @@ def build_tts(aiohttp_session: aiohttp.ClientSession):
             voice=os.getenv("ELEVENLABS_VOICE_ID"),
             # eleven_flash_v2_5 là model duy nhất của ElevenLabs hỗ trợ tiếng Việt
             # với độ trễ thấp (~75ms), phù hợp mục tiêu latency của dự án này.
-            model=os.getenv("ELEVENLABS_MODEL", "eleven_flash_v2_5"),
+            model=runtime_config.get("ELEVENLABS_MODEL", "eleven_flash_v2_5"),
             language="vi",
         ),
     )
@@ -175,6 +222,44 @@ async def bot(runner_args: RunnerArguments):
     transport = await create_transport(runner_args, {"webrtc": webrtc_params})
 
     aiohttp_session = aiohttp.ClientSession()
+    session = session_manager.create(kind="voice")
+    try:
+        s2s_mode = S2SMode.parse(runtime_config.get("S2S_MODE", "shadow"))
+    except ValueError:
+        session_manager.end(session.session_id)
+        await aiohttp_session.close()
+        raise
+    orchestrator = orchestrator_registry.create(session.session_id, s2s_mode)
+    try:
+        ring_ms = int(runtime_config.get("S2S_AUDIO_RING_MS", "30000"))
+        subscriber_frames = int(
+            runtime_config.get("S2S_SUBSCRIBER_QUEUE_FRAMES", "128")
+        )
+    except ValueError:
+        logger.warning("S2S Audio Hub config không hợp lệ; dùng 30000ms/128 frames")
+        ring_ms, subscriber_frames = 30_000, 128
+    audio_hub = AudioHub(
+        max_buffer_ms=ring_ms,
+        subscriber_queue_frames=subscriber_frames,
+    )
+    segment_policy = SegmentPolicy()
+    audio_hub_processor = AudioHubProcessor(audio_hub, orchestrator)
+    realtime_control = RealtimeControlProcessor(orchestrator, segment_policy)
+    anchor_observer = AnchorObservationProcessor(orchestrator, segment_policy)
+    playback_state = PlaybackStateProcessor(orchestrator)
+
+    shadow_runner = None
+    if s2s_mode is not S2SMode.OFF:
+        shadow_backend = build_s2s_backend(
+            runtime_config.get("S2S_SHADOW_BACKEND", "probe")
+        )
+        shadow_runner = ShadowS2SRunner(
+            subscription=audio_hub.subscribe("speech-native-fast-path"),
+            backend=shadow_backend,
+            orchestrator=orchestrator,
+            on_proposal=realtime_control.submit_fast_proposal,
+        )
+
     stt = build_stt()
     llm = build_llm()
     tts = build_tts(aiohttp_session)
@@ -183,18 +268,47 @@ async def bot(runner_args: RunnerArguments):
         messages=[{"role": "system", "content": SYSTEM_PROMPT}],
         tools=ToolsSchema(standard_tools=[GET_CURRENT_TIME_TOOL]),
     )
+
+    # Giai đoạn 2 — xem duplex/turn_strategies.py: mặc định thay VADUserTurnStartStrategy
+    # (ngắt ngay khi có tiếng động) bằng bản phân biệt backchannel tiếng Việt. Đặt
+    # DUPLEX_BACKCHANNEL_FILTER=false để quay lại hành vi VAD thuần nếu cần so sánh.
+    backchannel_filter = runtime_config.get("DUPLEX_BACKCHANNEL_FILTER", "true").strip().lower() == "true"
+    try:
+        barge_in_delay_ms = int(runtime_config.get("DUPLEX_BARGE_IN_DELAY_MS", "200"))
+    except ValueError:
+        logger.warning("DUPLEX_BARGE_IN_DELAY_MS không hợp lệ; dùng 200ms")
+        barge_in_delay_ms = 200
+    user_turn_strategies = None
+    if backchannel_filter:
+        user_turn_strategies = UserTurnStrategies(
+            start=[
+                VietnameseBackchannelTurnStartStrategy(
+                    barge_in_delay_ms=barge_in_delay_ms,
+                )
+            ]
+        )
+
     context_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=SileroVADAnalyzer(),
+            user_turn_strategies=user_turn_strategies,
+        ),
     )
 
     pipeline = Pipeline(
         [
             transport.input(),
+            audio_hub_processor,
             stt,
+            EmotionTaggingProcessor(context),
             context_aggregator.user(),
+            realtime_control,
             llm,
+            anchor_observer,
             tts,
+            playback_state,
+            InterruptionRecoveryProcessor(context),
             transport.output(),
             context_aggregator.assistant(),
         ]
@@ -228,19 +342,45 @@ async def bot(runner_args: RunnerArguments):
         ],
     )
 
-    session = session_manager.create(kind="voice")
+    cleaned_up = False
+
+    async def cleanup(*, cancel_task: bool) -> None:
+        nonlocal cleaned_up
+        if cleaned_up:
+            return
+        cleaned_up = True
+        if shadow_runner:
+            await shadow_runner.stop()
+        stats = audio_hub.stats()
+        logger.info(
+            f"[s2s] Session {session.session_id}: mode={s2s_mode.value}, "
+            f"audio_frames={stats.published_frames}, dropped={stats.dropped_subscriber_frames}"
+        )
+        audio_hub.close()
+        orchestrator_registry.remove(session.session_id)
+        session_manager.end(session.session_id)
+        if not aiohttp_session.closed:
+            await aiohttp_session.close()
+        if cancel_task:
+            await task.cancel()
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
-        logger.info(f"[gateway] Voice session {session.session_id} đã kết nối.")
+        logger.info(
+            f"[gateway] Voice session {session.session_id} đã kết nối "
+            f"(S2S_MODE={s2s_mode.value})."
+        )
+        if shadow_runner:
+            await shadow_runner.start()
         await task.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info(f"[gateway] Voice session {session.session_id} đã ngắt kết nối.")
-        session_manager.end(session.session_id)
-        await aiohttp_session.close()
-        await task.cancel()
+        await cleanup(cancel_task=True)
 
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
-    await runner.run(task)
+    try:
+        await runner.run(task)
+    finally:
+        await cleanup(cancel_task=False)

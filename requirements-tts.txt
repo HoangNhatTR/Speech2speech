@@ -1,11 +1,16 @@
 # Cài vào venv RIÊNG (.venv-tts), không phải .venv chính — xem selfhost/tts_server.py
-# để biết lý do (dependency f5-tts rất nặng, nguy cơ xung đột fastapi/starlette với
-# Pipecat Gateway nếu cài chung venv).
+# để biết lý do (cô lập dependency có thể xung đột fastapi/starlette với Pipecat
+# Gateway nếu cài chung venv).
 #
 #   python -m venv .venv-tts
 #   .venv-tts\Scripts\pip install -r requirements-tts.txt
+#
+# vieneu: CPU (mặc định) không cần torch, dùng ONNX Runtime int8. Muốn dùng GPU: cài
+# thêm torch+CUDA vào cùng venv này trước (xem selfhost/tts_server.py) — vieneu tự
+# dùng GPU nếu phát hiện torch.cuda.is_available().
 
-f5-tts
+vieneu
 fastapi
 uvicorn
 python-multipart
+python-dotenv
